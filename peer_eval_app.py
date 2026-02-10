@@ -53,25 +53,40 @@ def save_to_google_sheets(current_user_id, new_rows):
     if not gc: return False
     try:
         sheet = gc.open(GOOGLE_SHEET_NAME).sheet1
+        
+        # 1. Get existing data safely
         try:
             all_data = sheet.get_all_records()
             df = pd.DataFrame(all_data)
         except:
             df = pd.DataFrame()
 
-        # Overwrite logic: Remove old submission from this student
+        # 2. Filter out old submissions from this user (Overwrite logic)
         if not df.empty and 'Evaluator ID' in df.columns:
+            # Convert to string to ensure matching works
             df['Evaluator ID'] = df['Evaluator ID'].astype(str)
-            df = df[df['Evaluator ID'] != str(current_user_id)]
+            current_user_id = str(current_user_id)
+            
+            # Keep rows that are NOT from this user
+            df = df[df['Evaluator ID'] != current_user_id]
         
+        # 3. Create new dataframe with current submission
         new_df = pd.DataFrame(new_rows)
+        
+        # 4. Combine old (filtered) data with new data
         final_df = pd.concat([df, new_df], ignore_index=True)
         
+        # 5. Clear and Write (The robust way)
         sheet.clear()
-        if not final_df.empty:
-            sheet.append_row(final_df.columns.tolist())
-            sheet.append_rows(final_df.values.tolist())
+        
+        # Prepare data for writing (Header + Values)
+        data_to_write = [final_df.columns.tolist()] + final_df.values.tolist()
+        
+        # Update the sheet
+        sheet.update(range_name='A1', values=data_to_write)
+        
         return True
+
     except Exception as e:
         st.error(f"Error saving data: {e}")
         return False
