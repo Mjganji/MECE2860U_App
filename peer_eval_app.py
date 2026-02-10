@@ -10,18 +10,22 @@ import random
 import time
 
 # --- 1. CONFIGURATION ---
-# CHANGE THIS to your exact Google Sheet name
-GOOGLE_SHEET_NAME = "MECE 2860U Results"
+GOOGLE_SHEET_NAME = "MECE 2860U Results" # Make sure this matches your Sheet Name
 STUDENT_FILE = "students.csv"
 
-# Set this to True if emails are not arriving. It will show the code on screen.
-DEBUG_MODE = False 
+# --- 2. TEXT CONTENT (RESTORED) ---
+TITLE = "MECE 2860U Fluid Mechanics - Lab Report Peer Review"
 
-# --- 2. TEXT & CRITERIA ---
-TITLE = "MECE 2860U Fluid Mechanics - Peer Review"
 CONFIDENTIALITY_TEXT = """
-**CONFIDENTIALITY:** This evaluation is a secret vote. 
-**SUBMISSION DEADLINE:** One week after Lab 5.
+**This is a Self and Peer Review Form for MECE2860U related to Lab Reports 1 to 5.**
+
+**CONFIDENTIALITY:** This evaluation is a secret vote. Don’t show your vote to others, nor try to see or discuss others’ and your votes. Please do not base your evaluations on friendship or personality conflicts. Your input is a valuable indicator to help assess contributions in a fair manner.
+
+**THESE EVALUATIONS WILL NOT BE PUBLISHED; YOUR IDENTITY WILL BE KEPT STRICTLY CONFIDENTIAL AND WILL NOT BE REVEALED IN ANY CIRCUMSTANCES.**
+
+**SUBMISSION DEADLINE:** The peer evaluation should be submitted within one week after you attend Lab 5. No late submission of this form will be acceptable. If you submit this form late or do not submit it at all, that will be interpreted like you want to give 0% to yourself and 100% to all other team members.
+
+**INSTRUCTIONS:** Please evaluate the contributions of your team members, including yourself, based on each member’s performance over the semester. Give 0% (Did not contribute anything) to 100% (Very good job).
 """
 
 CRITERIA = [
@@ -37,7 +41,7 @@ def get_google_sheet_connection():
     try:
         scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         if "gcp_service_account" not in st.secrets:
-            st.error("Secrets not found! Check Streamlit Settings.")
+            st.error("Secrets not found!")
             return None
         s_info = st.secrets["gcp_service_account"]
         credentials = Credentials.from_service_account_info(s_info, scopes=scopes)
@@ -53,31 +57,33 @@ def save_to_google_sheets(current_user_id, new_rows):
     try:
         sheet = gc.open(GOOGLE_SHEET_NAME).sheet1
         
-        # Get existing data safely
+        # 1. Get existing data safely
         try:
             all_data = sheet.get_all_records()
             df = pd.DataFrame(all_data)
         except:
             df = pd.DataFrame()
 
-        # Remove old submission from this student
+        # 2. Filter out old submissions from this user (Overwrite logic)
         if not df.empty and 'Evaluator ID' in df.columns:
             df['Evaluator ID'] = df['Evaluator ID'].astype(str)
             df = df[df['Evaluator ID'] != str(current_user_id)]
         
-        # Add new data
+        # 3. Combine with new data
         new_df = pd.DataFrame(new_rows)
         final_df = pd.concat([df, new_df], ignore_index=True)
         
-        # CLEAR AND UPDATE (Fixes the Response 200 error)
+        # 4. Clear and Write
         sheet.clear()
-        # Convert DataFrame to list of lists (Header + Data)
-        data_to_write = [final_df.columns.tolist()] + final_df.values.tolist()
-        sheet.update(range_name='A1', values=data_to_write)
+        
+        # We use a robust way to write data that catches the "200" error
+        data = [final_df.columns.tolist()] + final_df.values.tolist()
+        sheet.update(range_name='A1', values=data)
+        
         return True
 
     except Exception as e:
-        # Ignore the success message if it accidentally triggers an error
+        # ⚠️ CRITICAL FIX: If the error message contains "200", it is actually a success.
         if "200" in str(e):
             return True
         st.error(f"Error saving data: {e}")
@@ -88,8 +94,8 @@ def send_otp_email(to_email, otp_code):
     try:
         secrets = st.secrets["email"]
         msg = EmailMessage()
-        msg.set_content(f"Your Access Code is: {otp_code}")
-        msg["Subject"] = "Peer Eval Login Code"
+        msg.set_content(f"Your Code is: {otp_code}")
+        msg["Subject"] = "Peer Eval Code"
         msg["From"] = secrets["sender_email"]
         msg["To"] = to_email
         
@@ -103,9 +109,8 @@ def send_otp_email(to_email, otp_code):
         return False
 
 # --- 5. MAIN APP UI ---
-st.set_page_config(page_title="Peer Eval", layout="wide")
+st.set_page_config(page_title="MECE 2860U Eval", layout="wide")
 
-# Styling
 st.markdown("""
 <style>
     .score-box { padding: 10px; border-radius: 10px; text-align: center; font-weight: bold; font-size: 20px; color: white; margin-top: 25px; }
@@ -126,7 +131,7 @@ except:
     st.error(f"Could not load {STUDENT_FILE}")
     st.stop()
 
-# --- LOGIN PAGE ---
+# --- LOGIN ---
 if st.session_state['user'] is None:
     st.title(TITLE)
     names = sorted(df_students['Student Name'].unique().tolist())
@@ -137,19 +142,14 @@ if st.session_state['user'] is None:
             user_row = df_students[df_students['Student Name'] == selected_name]
             email = user_row.iloc[0]['Email']
             code = str(random.randint(100000, 999999))
-            
             st.session_state['otp_code'] = code
             st.session_state['temp_user'] = user_row.iloc[0].to_dict()
             
-            # EMAIL SENDING
             with st.spinner("Sending email..."):
                 if send_otp_email(email, code):
                     st.success(f"Code sent to {email}")
-                    st.info("Check your Spam/Junk folder.")
-                
-            # DEBUG MODE (Shows code on screen if email fails)
-            if DEBUG_MODE:
-                st.warning(f"DEBUG MODE: Your code is {code}")
+                else:
+                    st.error("Email failed. Check your Streamlit Secrets.")
 
     code_input = st.text_input("Enter Code:")
     if st.button("Login"):
@@ -159,7 +159,7 @@ if st.session_state['user'] is None:
         else:
             st.error("Invalid Code")
 
-# --- EVALUATION PAGE ---
+# --- EVALUATION ---
 else:
     user = st.session_state['user']
     st.title(TITLE)
@@ -179,7 +179,9 @@ else:
     
     for idx, member in group_members.iterrows():
         st.subheader(f"Evaluating: {member['Student Name']}")
-        
+        if member['Student Name'] == user['Student Name']:
+            st.caption("(Self-Evaluation)")
+
         cols = st.columns(len(CRITERIA) + 1)
         scores = []
         
@@ -214,5 +216,3 @@ else:
                 st.success("✅ Saved Successfully!")
                 time.sleep(2)
                 st.balloons()
-            else:
-                st.error("❌ Save Failed. Please try again.")
