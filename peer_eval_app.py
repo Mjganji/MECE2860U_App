@@ -2,27 +2,26 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
-from datetime import datetime, timedelta
+from datetime import datetime
 import smtplib
 import ssl
 from email.message import EmailMessage
 import random
+import time
 
-# --- CONFIGURATION ---
-# This must match your Google Sheet Name exactly
+# --- 1. CONFIGURATION ---
+# CHANGE THIS to your exact Google Sheet name
 GOOGLE_SHEET_NAME = "MECE 2860U Results"
 STUDENT_FILE = "students.csv"
 
-# --- TEXT CONTENT (From your Fluid Mechanics Doc) ---
-TITLE = "MECE 2860U Fluid Mechanics - Lab Report Peer Review"
+# Set this to True if emails are not arriving. It will show the code on screen.
+DEBUG_MODE = False 
 
+# --- 2. TEXT & CRITERIA ---
+TITLE = "MECE 2860U Fluid Mechanics - Peer Review"
 CONFIDENTIALITY_TEXT = """
-**This is a Self and Peer Review Form for MECE2860U related to Lab Reports 1 to 5.**
-
-**CONFIDENTIALITY:** This evaluation is a secret vote. Please do not base your evaluations on friendship or personality conflicts.
-**THESE EVALUATIONS WILL NOT BE PUBLISHED.**
-
-**SUBMISSION DEADLINE:** One week after you attend Lab 5. If you submit late or not at all, it will be interpreted as giving 0% to yourself and 100% to others.
+**CONFIDENTIALITY:** This evaluation is a secret vote. 
+**SUBMISSION DEADLINE:** One week after Lab 5.
 """
 
 CRITERIA = [
@@ -33,12 +32,12 @@ CRITERIA = [
     "Attitudes & Commitment"
 ]
 
-# --- GOOGLE SHEETS CONNECTION ---
+# --- 3. GOOGLE SHEETS CONNECTION ---
 def get_google_sheet_connection():
     try:
         scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         if "gcp_service_account" not in st.secrets:
-            st.error("Secrets not found!")
+            st.error("Secrets not found! Check Streamlit Settings.")
             return None
         s_info = st.secrets["gcp_service_account"]
         credentials = Credentials.from_service_account_info(s_info, scopes=scopes)
@@ -54,49 +53,42 @@ def save_to_google_sheets(current_user_id, new_rows):
     try:
         sheet = gc.open(GOOGLE_SHEET_NAME).sheet1
         
-        # 1. Get existing data safely
+        # Get existing data safely
         try:
             all_data = sheet.get_all_records()
             df = pd.DataFrame(all_data)
         except:
             df = pd.DataFrame()
 
-        # 2. Filter out old submissions from this user (Overwrite logic)
+        # Remove old submission from this student
         if not df.empty and 'Evaluator ID' in df.columns:
-            # Convert to string to ensure matching works
             df['Evaluator ID'] = df['Evaluator ID'].astype(str)
-            current_user_id = str(current_user_id)
-            
-            # Keep rows that are NOT from this user
-            df = df[df['Evaluator ID'] != current_user_id]
+            df = df[df['Evaluator ID'] != str(current_user_id)]
         
-        # 3. Create new dataframe with current submission
+        # Add new data
         new_df = pd.DataFrame(new_rows)
-        
-        # 4. Combine old (filtered) data with new data
         final_df = pd.concat([df, new_df], ignore_index=True)
         
-        # 5. Clear and Write (The robust way)
+        # CLEAR AND UPDATE (Fixes the Response 200 error)
         sheet.clear()
-        
-        # Prepare data for writing (Header + Values)
+        # Convert DataFrame to list of lists (Header + Data)
         data_to_write = [final_df.columns.tolist()] + final_df.values.tolist()
-        
-        # Update the sheet
         sheet.update(range_name='A1', values=data_to_write)
-        
         return True
 
     except Exception as e:
+        # Ignore the success message if it accidentally triggers an error
+        if "200" in str(e):
+            return True
         st.error(f"Error saving data: {e}")
         return False
 
-# --- EMAIL OTP ---
+# --- 4. EMAIL FUNCTION ---
 def send_otp_email(to_email, otp_code):
     try:
         secrets = st.secrets["email"]
         msg = EmailMessage()
-        msg.set_content(f"Your Code is: {otp_code}")
+        msg.set_content(f"Your Access Code is: {otp_code}")
         msg["Subject"] = "Peer Eval Login Code"
         msg["From"] = secrets["sender_email"]
         msg["To"] = to_email
@@ -107,24 +99,16 @@ def send_otp_email(to_email, otp_code):
             server.send_message(msg)
         return True
     except Exception as e:
-        st.error(f"Email Error: {e}")
+        st.error(f"Email Failed: {e}")
         return False
 
-# --- MAIN APP ---
-st.set_page_config(page_title="MECE 2860U Eval", layout="wide")
+# --- 5. MAIN APP UI ---
+st.set_page_config(page_title="Peer Eval", layout="wide")
 
-# Custom CSS for that "Green/Red" score box you liked
+# Styling
 st.markdown("""
 <style>
-    .score-box {
-        padding: 10px;
-        border-radius: 10px;
-        text-align: center;
-        font-weight: bold;
-        font-size: 20px;
-        margin-top: 25px;
-        color: white;
-    }
+    .score-box { padding: 10px; border-radius: 10px; text-align: center; font-weight: bold; font-size: 20px; color: white; margin-top: 25px; }
     .score-green { background-color: #28a745; }
     .score-red { background-color: #dc3545; } 
 </style>
@@ -133,7 +117,7 @@ st.markdown("""
 if 'user' not in st.session_state: st.session_state['user'] = None
 if 'otp_code' not in st.session_state: st.session_state['otp_code'] = None
 
-# LOAD STUDENTS
+# LOAD DATA
 try:
     df_students = pd.read_csv(STUDENT_FILE)
     df_students.columns = df_students.columns.str.strip()
@@ -142,24 +126,32 @@ except:
     st.error(f"Could not load {STUDENT_FILE}")
     st.stop()
 
-# --- LOGIN SCREEN ---
+# --- LOGIN PAGE ---
 if st.session_state['user'] is None:
     st.title(TITLE)
     names = sorted(df_students['Student Name'].unique().tolist())
     selected_name = st.selectbox("Select your name:", [""] + names)
     
-    if st.button("Send Verification Code"):
+    if st.button("Send Code"):
         if selected_name:
             user_row = df_students[df_students['Student Name'] == selected_name]
-            if not user_row.empty:
-                email = user_row.iloc[0]['Email']
-                code = str(random.randint(100000, 999999))
-                st.session_state['otp_code'] = code
-                st.session_state['temp_user'] = user_row.iloc[0].to_dict()
+            email = user_row.iloc[0]['Email']
+            code = str(random.randint(100000, 999999))
+            
+            st.session_state['otp_code'] = code
+            st.session_state['temp_user'] = user_row.iloc[0].to_dict()
+            
+            # EMAIL SENDING
+            with st.spinner("Sending email..."):
                 if send_otp_email(email, code):
                     st.success(f"Code sent to {email}")
-    
-    code_input = st.text_input("Enter 6-digit Code:")
+                    st.info("Check your Spam/Junk folder.")
+                
+            # DEBUG MODE (Shows code on screen if email fails)
+            if DEBUG_MODE:
+                st.warning(f"DEBUG MODE: Your code is {code}")
+
+    code_input = st.text_input("Enter Code:")
     if st.button("Login"):
         if code_input == st.session_state['otp_code']:
             st.session_state['user'] = st.session_state['temp_user']
@@ -167,13 +159,12 @@ if st.session_state['user'] is None:
         else:
             st.error("Invalid Code")
 
-# --- EVALUATION FORM ---
+# --- EVALUATION PAGE ---
 else:
     user = st.session_state['user']
     st.title(TITLE)
     st.markdown(CONFIDENTIALITY_TEXT)
     
-    # Logout Button
     col1, col2 = st.columns([8,1])
     with col1: st.info(f"Logged in as: **{user['Student Name']}** (Group {user['Group #']})")
     with col2: 
@@ -184,44 +175,27 @@ else:
     group_members = df_students[df_students['Group #'] == user['Group #']]
     submission_data = []
     
-    st.write("---")
+    st.divider()
     
-    # Loop through group members
     for idx, member in group_members.iterrows():
         st.subheader(f"Evaluating: {member['Student Name']}")
-        if member['Student Name'] == user['Student Name']:
-            st.caption("(Self-Evaluation)")
-
-        # Create columns for criteria
+        
         cols = st.columns(len(CRITERIA) + 1)
-        member_scores = []
+        scores = []
         
         for i, criterion in enumerate(CRITERIA):
             with cols[i]:
-                # Unique key for every input
-                score = st.number_input(
-                    criterion, 
-                    min_value=0, max_value=100, value=100, step=5, 
-                    key=f"{member['Student ID']}_{i}"
-                )
-                if score < 80:
-                    st.markdown(":red[⚠️ **< 80%**]")
-                member_scores.append(score)
+                s = st.number_input(criterion, 0, 100, 100, step=5, key=f"{member['Student ID']}_{i}")
+                if s < 80: st.caption(":red[Low Score]")
+                scores.append(s)
         
-        # Calculate Average
-        avg = sum(member_scores) / len(member_scores) if member_scores else 0
+        avg = sum(scores) / len(scores) if scores else 0
         
-        # The Colorful Score Box
         with cols[-1]:
-            color_class = "score-green" if avg >= 80 else "score-red"
-            st.markdown(f"""
-                <div class="score-box {color_class}">
-                    OVERALL<br>{avg:.1f}%
-                </div>
-            """, unsafe_allow_html=True)
-        
-        # Prepare data for saving
-        row = {
+            color = "score-green" if avg >= 80 else "score-red"
+            st.markdown(f'<div class="score-box {color}">OVERALL<br>{avg:.1f}%</div>', unsafe_allow_html=True)
+            
+        submission_data.append({
             "Evaluator": user['Student Name'],
             "Evaluator ID": str(user['Student ID']),
             "Group": user['Group #'],
@@ -229,16 +203,16 @@ else:
             "Peer ID": str(member['Student ID']),
             "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "Overall Score": avg,
-            "Comments": st.text_input(f"Comments for {member['Student Name']}:", key=f"comm_{member['Student ID']}")
-        }
-        # Add individual scores to the row
-        for i, cr in enumerate(CRITERIA): row[cr] = member_scores[i]
-        submission_data.append(row)
-        st.markdown("---")
+            "Details": str(scores),
+            "Comments": st.text_input(f"Comments for {member['Student Name']}:", key=f"c_{member['Student ID']}")
+        })
+        st.divider()
 
-    # Submit Button
     if st.button("Submit Evaluation", type="primary"):
-        with st.spinner("Saving..."):
+        with st.spinner("Saving to Google Sheets..."):
             if save_to_google_sheets(user['Student ID'], submission_data):
-                st.success("Saved successfully!")
+                st.success("✅ Saved Successfully!")
+                time.sleep(2)
                 st.balloons()
+            else:
+                st.error("❌ Save Failed. Please try again.")
