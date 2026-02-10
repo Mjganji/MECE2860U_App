@@ -10,7 +10,7 @@ import random
 import time
 
 # --- 1. CONFIGURATION ---
-GOOGLE_SHEET_NAME = "MECE 2860U Results" # Make sure this matches your Sheet Name
+GOOGLE_SHEET_NAME = "MECE2860U Results" # Make sure this matches your Sheet Name
 STUDENT_FILE = "students.csv"
 
 # --- 2. TEXT CONTENT (RESTORED) ---
